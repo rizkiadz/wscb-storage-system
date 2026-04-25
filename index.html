@@ -134,6 +134,10 @@
   .filter-reset-btn:hover { background: var(--bg-secondary); }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- Firebase CDN (compat mode — paling kompatibel dengan GitHub Pages) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
 <div class="container">
@@ -362,19 +366,15 @@
   </div>
 </div>
 
-<script type="module">
-import { initializeApp, getApps } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getAuth, signInWithEmailAndPassword, signOut, createUserWithEmailAndPassword, onAuthStateChanged } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, collection, doc, addDoc, setDoc, updateDoc, deleteDoc, onSnapshot, query, orderBy, getDoc } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
-
+<script>
+// ── Config ─────────────────────────────────────────
 const CONFIG_KEY = 'gudang_fb_cfg_v1';
 let app, auth, db;
-let _activeCfg = null; // config aktif disimpan di memori, bukan hanya localStorage
+let _activeCfg = null;
 let currentUser = null, currentUserData = null;
 let barangList = [], historyList = [], usersList = [];
 let unsubBarang, unsubHistory, unsubUsers;
 
-// ── Config ─────────────────────────────────────────
 function loadCfg() { try { return JSON.parse(localStorage.getItem(CONFIG_KEY)); } catch { return null; } }
 function saveCfg(c) { localStorage.setItem(CONFIG_KEY, JSON.stringify(c)); }
 
@@ -383,14 +383,14 @@ window.showConfigScreen = () => {
   document.getElementById('config-screen').style.display = 'block';
 };
 
-window.saveConfig = async () => {
+window.saveConfig = () => {
   const c = {
-    apiKey: document.getElementById('cfg-apikey').value.trim(),
-    authDomain: document.getElementById('cfg-authdomain').value.trim(),
-    projectId: document.getElementById('cfg-projectid').value.trim(),
-    storageBucket: document.getElementById('cfg-bucket').value.trim(),
+    apiKey:            document.getElementById('cfg-apikey').value.trim(),
+    authDomain:        document.getElementById('cfg-authdomain').value.trim(),
+    projectId:         document.getElementById('cfg-projectid').value.trim(),
+    storageBucket:     document.getElementById('cfg-bucket').value.trim(),
     messagingSenderId: document.getElementById('cfg-senderid').value.trim(),
-    appId: document.getElementById('cfg-appid').value.trim(),
+    appId:             document.getElementById('cfg-appid').value.trim(),
   };
   const errEl = document.getElementById('cfg-err');
   if (!c.apiKey || !c.authDomain || !c.projectId) {
@@ -399,37 +399,39 @@ window.saveConfig = async () => {
   }
   errEl.style.display = 'none';
   saveCfg(c);
-  _activeCfg = c; // simpan ke memori
+  _activeCfg = c;
   document.getElementById('config-screen').style.display = 'none';
   document.getElementById('loading-screen').style.display = 'flex';
   initFB(c);
 };
 
-// ── Init Firebase ──────────────────────────────────
+// ── Init Firebase (compat mode) ────────────────────
 function initFB(cfg) {
   try {
-    app = initializeApp(cfg, 'main');
-    auth = getAuth(app);
-    db = getFirestore(app);
-    onAuthStateChanged(auth, onAuthChange);
+    // Cegah inisialisasi ganda
+    if (firebase.apps.length > 0) {
+      app  = firebase.apps[0];
+    } else {
+      app  = firebase.initializeApp(cfg);
+    }
+    auth = firebase.auth();
+    db   = firebase.firestore();
+    auth.onAuthStateChanged(onAuthChange);
   } catch (e) {
     document.getElementById('loading-screen').style.display = 'none';
     const errEl = document.getElementById('cfg-err');
-    errEl.textContent = 'Gagal terhubung: ' + e.message;
-    errEl.style.display = 'block';
+    if (errEl) { errEl.textContent = 'Gagal terhubung: ' + e.message; errEl.style.display = 'block'; }
     document.getElementById('config-screen').style.display = 'block';
+    console.error('Firebase init error:', e);
   }
 }
 
 async function onAuthChange(fbUser) {
   document.getElementById('loading-screen').style.display = 'none';
-
-  // Jika sedang proses registrasi, abaikan perubahan auth state ini
   if (window._registeringNewUser) return;
-
   if (fbUser) {
-    const snap = await getDoc(doc(db, 'users', fbUser.uid));
-    if (snap.exists()) {
+    const snap = await db.collection('users').doc(fbUser.uid).get();
+    if (snap.exists) {
       currentUser = fbUser;
       currentUserData = snap.data();
       document.getElementById('login-screen').style.display = 'none';
@@ -438,7 +440,7 @@ async function onAuthChange(fbUser) {
       subscribeData();
       switchTab('stok');
     } else {
-      await signOut(auth);
+      await auth.signOut();
       showLogin('Akun tidak terdaftar dalam sistem.');
     }
   } else {
@@ -452,44 +454,49 @@ async function onAuthChange(fbUser) {
 function showLogin(err = '') {
   document.getElementById('login-screen').style.display = 'block';
   const el = document.getElementById('login-err');
-  el.textContent = err; el.style.display = err ? 'block' : 'none';
+  if (el) { el.textContent = err; el.style.display = err ? 'block' : 'none'; }
 }
 
 // ── Auth ────────────────────────────────────────────
 window.doLogin = async () => {
   const email = document.getElementById('inp-user').value.trim();
-  const pass = document.getElementById('inp-pass').value;
-  const btn = document.getElementById('login-btn');
+  const pass  = document.getElementById('inp-pass').value;
+  const btn   = document.getElementById('login-btn');
   const errEl = document.getElementById('login-err');
   errEl.style.display = 'none';
   if (!email || !pass) { errEl.textContent = 'Email dan password wajib diisi.'; errEl.style.display = 'block'; return; }
   btn.disabled = true; btn.textContent = 'Masuk...';
   try {
-    await signInWithEmailAndPassword(auth, email, pass);
+    await auth.signInWithEmailAndPassword(email, pass);
   } catch (e) {
-    const msgs = { 'auth/invalid-credential': 'Email atau password salah.', 'auth/user-not-found': 'Akun tidak ditemukan.', 'auth/wrong-password': 'Password salah.', 'auth/too-many-requests': 'Terlalu banyak percobaan, coba lagi nanti.' };
+    const msgs = {
+      'auth/invalid-credential':    'Email atau password salah.',
+      'auth/user-not-found':        'Akun tidak ditemukan.',
+      'auth/wrong-password':        'Password salah.',
+      'auth/too-many-requests':     'Terlalu banyak percobaan, coba lagi nanti.',
+      'auth/invalid-email':         'Format email tidak valid.',
+    };
     errEl.textContent = msgs[e.code] || 'Login gagal: ' + e.message;
     errEl.style.display = 'block';
   } finally { btn.disabled = false; btn.textContent = 'Masuk'; }
 };
 
-window.doLogout = () => signOut(auth);
-const isAdmin = () => currentUserData?.role === 'admin';
+window.doLogout = () => auth.signOut();
+const isAdmin = () => currentUserData && currentUserData.role === 'admin';
 
 // ── Auth Tab Toggle ──────────────────────────────────
 window.switchAuthTab = (tab) => {
   const isLogin = tab === 'login';
-  document.getElementById('panel-login').style.display = isLogin ? 'block' : 'none';
-  document.getElementById('panel-daftar').style.display = isLogin ? 'none' : 'block';
-  document.getElementById('tab-login-btn').classList.toggle('active', isLogin);
+  document.getElementById('panel-login').style.display  = isLogin ? 'block' : 'none';
+  document.getElementById('panel-daftar').style.display = isLogin ? 'none'  : 'block';
+  document.getElementById('tab-login-btn').classList.toggle('active',  isLogin);
   document.getElementById('tab-daftar-btn').classList.toggle('active', !isLogin);
-  document.getElementById('login-err').style.display = 'none';
-  document.getElementById('reg-err').style.display = 'none';
+  document.getElementById('login-err').style.display  = 'none';
+  document.getElementById('reg-err').style.display    = 'none';
   document.getElementById('reg-success').style.display = 'none';
 };
 
 // ── Self Register ────────────────────────────────────
-// Alur: buat akun (SDK) → Firestore sudah punya auth → logout → tampil sukses
 window.doRegister = async () => {
   const nama   = document.getElementById('reg-nama').value.trim();
   const email  = document.getElementById('reg-email').value.trim();
@@ -497,8 +504,7 @@ window.doRegister = async () => {
   const pass2  = document.getElementById('reg-pass2').value;
   const errEl  = document.getElementById('reg-err');
   const sucEl  = document.getElementById('reg-success');
-  errEl.style.display = 'none';
-  sucEl.style.display = 'none';
+  errEl.style.display = 'none'; sucEl.style.display = 'none';
 
   if (!nama)           { errEl.textContent = 'Nama lengkap wajib diisi.';        errEl.style.display = 'block'; return; }
   if (!email)          { errEl.textContent = 'Email wajib diisi.';               errEl.style.display = 'block'; return; }
@@ -507,29 +513,15 @@ window.doRegister = async () => {
 
   const btn = document.getElementById('reg-btn');
   btn.disabled = true; btn.textContent = 'Mendaftar...';
-
   try {
-    // Flag agar onAuthStateChanged tidak redirect ke main app saat registrasi
     window._registeringNewUser = true;
-
-    // Buat akun — user otomatis login setelahnya
-    const cred = await createUserWithEmailAndPassword(auth, email, pass);
-    const uid = cred.user.uid;
-
-    // Tulis profil ke Firestore — user sudah punya auth token sekarang
-    await setDoc(doc(db, 'users', uid), { email: email, nama: nama, role: 'user' });
-
-    // Logout — user harus login ulang secara manual
-    await signOut(auth);
+    const cred = await auth.createUserWithEmailAndPassword(email, pass);
+    await db.collection('users').doc(cred.user.uid).set({ email, nama, role: 'user' });
+    await auth.signOut();
     window._registeringNewUser = false;
-
-    // Reset form & tampilkan pesan sukses
-    ['reg-nama','reg-email','reg-pass','reg-pass2'].forEach(function(id) {
-      document.getElementById(id).value = '';
-    });
+    ['reg-nama','reg-email','reg-pass','reg-pass2'].forEach(id => document.getElementById(id).value = '');
     sucEl.style.display = 'block';
-    setTimeout(function() { switchAuthTab('login'); }, 2500);
-
+    setTimeout(() => switchAuthTab('login'), 2500);
   } catch (e) {
     window._registeringNewUser = false;
     const msgs = {
@@ -537,34 +529,31 @@ window.doRegister = async () => {
       'auth/invalid-email':        'Format email tidak valid.',
       'auth/weak-password':        'Password minimal 6 karakter.',
       'auth/operation-not-allowed':'Email/Password sign-in belum diaktifkan di Firebase.',
-      'auth/network-request-failed':'Gagal terhubung ke server.',
     };
-    errEl.textContent = msgs[e.code] || ('Pendaftaran gagal: ' + (e.message || e.code));
+    errEl.textContent = msgs[e.code] || 'Pendaftaran gagal: ' + e.message;
     errEl.style.display = 'block';
-  } finally {
-    btn.disabled = false; btn.textContent = 'Daftar Sekarang';
-  }
+  } finally { btn.disabled = false; btn.textContent = 'Daftar Sekarang'; }
 };
 
-// ── Realtime ────────────────────────────────────────
+// ── Realtime Listeners ───────────────────────────────
 function subscribeData() {
-  unsubBarang = onSnapshot(collection(db, 'barang'), snap => {
+  unsubBarang = db.collection('barang').onSnapshot(snap => {
     barangList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderAll();
   });
-  unsubHistory = onSnapshot(query(collection(db, 'history'), orderBy('timestamp', 'desc')), snap => {
+  unsubHistory = db.collection('history').orderBy('timestamp', 'desc').onSnapshot(snap => {
     historyList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderHistory();
     if (isAdmin()) renderLaporan();
   });
-  unsubUsers = onSnapshot(collection(db, 'users'), snap => {
+  unsubUsers = db.collection('users').onSnapshot(snap => {
     usersList = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     if (isAdmin()) renderManajemen();
   });
 }
-function unsubAll() { unsubBarang?.(); unsubHistory?.(); unsubUsers?.(); }
+function unsubAll() { if(unsubBarang)unsubBarang(); if(unsubHistory)unsubHistory(); if(unsubUsers)unsubUsers(); }
 
-// ── UI ──────────────────────────────────────────────
+// ── UI Setup ────────────────────────────────────────
 function setupUI() {
   const nm = currentUserData.nama || currentUserData.email || 'User';
   const initials = nm.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
@@ -577,17 +566,21 @@ function setupUI() {
   badge.className = 'role-badge ' + (isAdmin() ? 'badge-admin' : 'badge-user');
 
   document.getElementById('tabs-bar').innerHTML = [
-    { key: 'stok', label: 'Stok Barang', ok: true },
-    { key: 'transaksi', label: 'Transaksi', ok: true },
-    { key: 'notif', label: 'Notifikasi', ok: true },
-    { key: 'laporan', label: 'Laporan', ok: isAdmin() },
-    { key: 'manajemen', label: 'Manajemen User', ok: isAdmin() },
+    { key:'stok',      label:'Stok Barang',    ok: true },
+    { key:'transaksi', label:'Transaksi',       ok: true },
+    { key:'notif',     label:'Notifikasi',      ok: true },
+    { key:'laporan',   label:'Laporan',         ok: isAdmin() },
+    { key:'manajemen', label:'Manajemen User',  ok: isAdmin() },
   ].map(t => `<button class="tab" id="tab-${t.key}" onclick="switchTab('${t.key}')" ${!t.ok ? 'disabled' : ''}>${t.label}</button>`).join('');
 
   if (!isAdmin()) {
     document.getElementById('trx-jenis-wrap').style.display = 'none';
     document.getElementById('trx-lock-notice').innerHTML = '<div class="lock-notice">Sebagai <b style="font-weight:500">User</b>, Anda hanya dapat mencatat barang keluar.</div>';
     document.getElementById('trx-card-title').textContent = 'Catat Barang Keluar';
+  } else {
+    document.getElementById('trx-jenis-wrap').style.display = '';
+    document.getElementById('trx-lock-notice').innerHTML = '';
+    document.getElementById('trx-card-title').textContent = 'Catat Transaksi';
   }
 }
 
@@ -596,71 +589,53 @@ window.switchTab = key => {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   const t = document.getElementById('tab-' + key);
   if (t && !t.disabled) t.classList.add('active');
-  document.getElementById('page-' + key)?.classList.add('active');
+  const p = document.getElementById('page-' + key);
+  if (p) p.classList.add('active');
 };
 
-function toast(id, ms = 3000) { const el = document.getElementById(id); if (!el) return; el.style.display = 'block'; setTimeout(() => el.style.display = 'none', ms); }
+function toast(id, ms = 3000) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = 'block';
+  setTimeout(() => el.style.display = 'none', ms);
+}
+
+// ── Helper ──────────────────────────────────────────
 function getStatus(b) {
-  if (b.stok === 0) return { label: 'Habis', cls: 'badge-danger' };
-  if (b.stok < b.min) return { label: 'Menipis', cls: 'badge-warn' };
-  // Cek EXPD untuk Chemical
+  if (b.stok === 0) return { label:'Habis', cls:'badge-danger' };
+  if (b.stok < b.min) return { label:'Menipis', cls:'badge-warn' };
   if (b.kategori === 'Chemical' && b.expdDate) {
     const today = new Date(); today.setHours(0,0,0,0);
     const expd  = new Date(b.expdDate); expd.setHours(0,0,0,0);
-    const diffDays = Math.ceil((expd - today) / (1000 * 60 * 60 * 24));
-    if (diffDays < 0)  return { label: 'EXPIRED', cls: 'badge-danger', expd: true };
-    if (diffDays <= 30) return { label: 'Akan EXPD', cls: 'badge-expd', expd: true, diffDays };
+    const diff  = Math.ceil((expd - today) / 86400000);
+    if (diff < 0)   return { label:'EXPIRED',   cls:'badge-danger', expd:true };
+    if (diff <= 30) return { label:'Akan EXPD', cls:'badge-expd',   expd:true, diffDays:diff };
   }
-  return { label: 'Aman', cls: 'badge-ok' };
+  return { label:'Aman', cls:'badge-ok' };
 }
-
-// Helper: format tanggal ke dd/mm/yyyy
-function fmtDate(dateStr) {
-  if (!dateStr) return '-';
-  const d = new Date(dateStr);
-  return d.toLocaleDateString('id-ID', { day:'2-digit', month:'2-digit', year:'numeric' });
+function fmtDate(d) {
+  if (!d) return '-';
+  return new Date(d).toLocaleDateString('id-ID', { day:'2-digit', month:'2-digit', year:'numeric' });
 }
-
-// Helper: hitung sisa hari ke EXPD
-function sisaHari(dateStr) {
-  if (!dateStr) return null;
+function sisaHari(d) {
+  if (!d) return null;
   const today = new Date(); today.setHours(0,0,0,0);
-  const expd  = new Date(dateStr); expd.setHours(0,0,0,0);
-  return Math.ceil((expd - today) / (1000 * 60 * 60 * 24));
+  const expd  = new Date(d); expd.setHours(0,0,0,0);
+  return Math.ceil((expd - today) / 86400000);
 }
 
-// ── Stok ────────────────────────────────────────────
-function renderMetrics() {
-  const t = barangList.length;
-  const a = barangList.filter(b => b.stok >= b.min).length;
-  const m = barangList.filter(b => b.stok > 0 && b.stok < b.min).length;
-  const h = barangList.filter(b => b.stok === 0).length;
-  const e = barangList.filter(b => {
-    if (b.kategori !== 'Chemical' || !b.expdDate) return false;
-    const sisa = sisaHari(b.expdDate);
-    return sisa !== null && sisa <= 30;
-  }).length;
-  document.getElementById('metrics-bar').innerHTML = `
-    <div class="metric"><div class="metric-label">Total Jenis</div><div class="metric-value">${t}</div></div>
-    <div class="metric"><div class="metric-label">Stok Aman</div><div class="metric-value">${a}</div></div>
-    <div class="metric"><div class="metric-label">Menipis</div><div class="metric-value warn">${m}</div></div>
-    <div class="metric"><div class="metric-label">Habis</div><div class="metric-value danger">${h}</div></div>
-    ${e > 0 ? `<div class="metric"><div class="metric-label">Akan EXPD</div><div class="metric-value" style="color:#5B21B6;">${e}</div></div>` : ''}`;
-}
-
-// ── State sort & filter ──────────────────────────────
+// ── Sort & Filter State ──────────────────────────────
 let _sortCol = 'nama', _sortDir = 'asc';
-
 function getStatusOrder(label) {
-  return { 'Habis': 0, 'EXPIRED': 1, 'Akan EXPD': 2, 'Menipis': 3, 'Aman': 4 }[label] ?? 5;
+  return { 'Habis':0, 'EXPIRED':1, 'Akan EXPD':2, 'Menipis':3, 'Aman':4 }[label] ?? 5;
 }
 
 window.sortStok = (col) => {
   if (_sortCol === col) { _sortDir = _sortDir === 'asc' ? 'desc' : 'asc'; }
   else { _sortCol = col; _sortDir = 'asc'; }
   document.querySelectorAll('th.sortable').forEach(th => th.classList.remove('asc','desc'));
-  const thMap = { nama:'th-nama', kategori:'th-kategori', stok:'th-stok', min:'th-min', satuan:'th-satuan', expdDate:'th-expd', status:'th-status' };
-  const el = document.getElementById(thMap[col]);
+  const map = { nama:'th-nama', kategori:'th-kategori', stok:'th-stok', min:'th-min', satuan:'th-satuan', expdDate:'th-expd', status:'th-status' };
+  const el = document.getElementById(map[col]);
   if (el) el.classList.add(_sortDir);
   applyFilters();
 };
@@ -690,7 +665,6 @@ window.applyFilters = () => {
     return true;
   });
 
-  // Sort
   list.sort((a, b) => {
     const sa = getStatus(a), sb = getStatus(b);
     let va, vb;
@@ -708,31 +682,24 @@ window.applyFilters = () => {
     if (va > vb) return _sortDir === 'asc' ?  1 : -1;
     return 0;
   });
-
   renderStokRows(list);
 };
 
 window.resetFilters = () => {
-  ['f-nama','f-stok-min','f-stok-max','f-min-val','f-expd-from','f-expd-to'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  ['f-kategori','f-satuan','f-status'].forEach(id => {
-    const el = document.getElementById(id); if (el) el.value = '';
-  });
-  _sortCol = 'nama'; _sortDir = 'asc';
+  ['f-nama','f-stok-min','f-stok-max','f-min-val','f-expd-from','f-expd-to'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['f-kategori','f-satuan','f-status'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  _sortCol='nama'; _sortDir='asc';
   document.querySelectorAll('th.sortable').forEach(th => th.classList.remove('asc','desc'));
-  const th = document.getElementById('th-nama'); if (th) th.classList.add('asc');
+  const th = document.getElementById('th-nama'); if(th) th.classList.add('asc');
   applyFilters();
 };
 
 function renderStokRows(list) {
-  // Counter barang
   const countEl = document.getElementById('stok-count');
   if (countEl) countEl.remove();
   if (list.length !== barangList.length) {
     const d = document.createElement('div');
-    d.id = 'stok-count';
-    d.style.cssText = 'font-size:12px;color:var(--text-secondary);margin-bottom:8px;';
+    d.id = 'stok-count'; d.style.cssText = 'font-size:12px;color:var(--text-secondary);margin-bottom:8px;';
     d.textContent = `Menampilkan ${list.length} dari ${barangList.length} barang`;
     const card = document.querySelector('#stok-body')?.closest('.card');
     if (card) card.insertBefore(d, card.firstChild);
@@ -740,36 +707,75 @@ function renderStokRows(list) {
   document.getElementById('stok-body').innerHTML = list.length ? list.map(b => {
     const s = getStatus(b);
     const aksi = isAdmin()
-      ? `<button class="btn-sm" onclick="adjustStok('${b.id}',1)">+</button> <button class="btn-sm" onclick="adjustStok('${b.id}',-1)">-</button> <button class="btn-danger" style="padding:4px 8px;font-size:11px;" onclick="hapusBarang('${b.id}','${b.nama.replace(/'/g, "\'")}')">Hapus</button>`
+      ? `<button class="btn-sm" onclick="adjustStok('${b.id}',1)">+</button> <button class="btn-sm" onclick="adjustStok('${b.id}',-1)">-</button> <button class="btn-danger" style="padding:4px 8px;font-size:11px;" onclick="hapusBarang('${b.id}','${b.nama.replace(/'/g,"\'")}')">Hapus</button>`
       : `<span style="font-size:12px;color:var(--text-secondary)">-</span>`;
-    const expdCell = b.kategori === 'Chemical'
+    const expdCell = b.kategori==='Chemical'
       ? `<td style="font-size:12px;">${fmtDate(b.expdDate)}</td>`
       : `<td style="font-size:12px;color:var(--text-secondary);">-</td>`;
     return `<tr><td><span style="font-weight:500">${b.nama}</span></td><td>${b.kategori}</td><td>${b.stok}</td><td>${b.min}</td><td>${b.satuan}</td>${expdCell}<td><span class="badge ${s.cls}">${s.label}</span></td><td>${aksi}</td></tr>`;
   }).join('') : '<tr><td colspan="8" class="empty">Tidak ada barang yang sesuai filter.</td></tr>';
 }
 
+// ── Stok ────────────────────────────────────────────
+function renderMetrics() {
+  const t=barangList.length, a=barangList.filter(b=>b.stok>=b.min).length,
+        m=barangList.filter(b=>b.stok>0&&b.stok<b.min).length, h=barangList.filter(b=>b.stok===0).length;
+  const e=barangList.filter(b=>{ if(b.kategori!=='Chemical'||!b.expdDate) return false; const s=sisaHari(b.expdDate); return s!==null&&s<=30; }).length;
+  document.getElementById('metrics-bar').innerHTML=`
+    <div class="metric"><div class="metric-label">Total Jenis</div><div class="metric-value">${t}</div></div>
+    <div class="metric"><div class="metric-label">Stok Aman</div><div class="metric-value">${a}</div></div>
+    <div class="metric"><div class="metric-label">Menipis</div><div class="metric-value warn">${m}</div></div>
+    <div class="metric"><div class="metric-label">Habis</div><div class="metric-value danger">${h}</div></div>
+    ${e>0?`<div class="metric"><div class="metric-label">Akan EXPD</div><div class="metric-value" style="color:#5B21B6;">${e}</div></div>`:''}`;
+}
+
 window.renderStokTable = () => {
-  // Set default sort asc by nama pada pemanggilan pertama
   const thNama = document.getElementById('th-nama');
-  if (thNama && !thNama.classList.contains('asc') && !thNama.classList.contains('desc')) {
-    thNama.classList.add('asc');
-  }
+  if (thNama && !thNama.classList.contains('asc') && !thNama.classList.contains('desc')) thNama.classList.add('asc');
   applyFilters();
+  if (isAdmin()) {
+    document.getElementById('add-barang-section').innerHTML = `
+      <div class="divider"></div>
+      <div class="card">
+        <div class="card-title">Tambah Barang Baru</div>
+        <div id="add-success" class="success-msg">Barang berhasil ditambahkan!</div>
+        <div class="form-row">
+          <div class="fg"><label>Nama Barang</label><input type="text" id="new-nama" placeholder="Nama barang" /></div>
+          <div class="fg"><label>Kategori</label><select id="new-kat" onchange="toggleExpdField()"><option>Chemical</option><option>Peralatan</option><option>Consumable</option><option>Lainnya</option></select></div>
+        </div>
+        <div class="form-row" id="new-expd-row" style="display:none;">
+          <div class="fg" style="grid-column:1/-1;">
+            <label style="color:#5B21B6;font-weight:500;">&#9888; EXPIRY DATE <span style="font-weight:400;color:var(--text-secondary);">(wajib untuk Chemical)</span></label>
+            <input type="date" id="new-expd" style="border-color:#5B21B6;" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="fg"><label>Stok Awal</label><input type="number" id="new-stok" placeholder="0" min="0" /></div>
+          <div class="fg"><label>Minimum Stok</label><input type="number" id="new-min-val" placeholder="5" min="0" /></div>
+        </div>
+        <div class="form-row">
+          <div class="fg"><label>Satuan</label><select id="new-sat"><option>EA</option><option>pcs</option><option>rim</option><option>dus</option><option>kg</option><option>gr</option><option>liter</option><option>ml</option><option>M</option><option>CM</option><option>YD</option><option>unit</option><option>box</option><option>roll</option><option>set</option></select></div>
+          <div class="fg" style="justify-content:flex-end;align-items:flex-end;"><button class="btn-primary" id="add-barang-btn" onclick="tambahBarang()">Tambah Barang</button></div>
+        </div>
+      </div>`;
+  } else {
+    document.getElementById('add-barang-section').innerHTML = '';
+  }
   renderTrxDropdown();
+};
 
 window.adjustStok = async (id, delta) => {
   if (!isAdmin()) return;
   const b = barangList.find(x => x.id === id);
   if (!b) return;
-  await updateDoc(doc(db, 'barang', id), { stok: Math.max(0, b.stok + delta) });
-  await addDoc(collection(db, 'history'), { barang: b.nama, barangId: id, jenis: delta > 0 ? 'masuk' : 'keluar', jumlah: Math.abs(delta), ket: 'Penyesuaian manual', oleh: currentUserData.nama || currentUser.email, userId: currentUser.uid, timestamp: Date.now() });
+  await db.collection('barang').doc(id).update({ stok: Math.max(0, b.stok + delta) });
+  await db.collection('history').add({ barang:b.nama, barangId:id, jenis:delta>0?'masuk':'keluar', jumlah:Math.abs(delta), ket:'Penyesuaian manual', oleh:currentUserData.nama||currentUser.email, userId:currentUser.uid, timestamp:Date.now() });
 };
 
 window.hapusBarang = async (id, nama) => {
   if (!isAdmin()) return;
   if (!confirm(`Hapus barang "${nama}"? Tindakan ini tidak dapat dibatalkan.`)) return;
-  await deleteDoc(doc(db, 'barang', id));
+  await db.collection('barang').doc(id).delete();
 };
 
 window.toggleExpdField = () => {
@@ -777,7 +783,7 @@ window.toggleExpdField = () => {
   const row = document.getElementById('new-expd-row');
   if (!row) return;
   row.style.display = kat === 'Chemical' ? 'grid' : 'none';
-  if (kat !== 'Chemical') { const f = document.getElementById('new-expd'); if(f) f.value = ''; }
+  if (kat !== 'Chemical') { const f=document.getElementById('new-expd'); if(f) f.value=''; }
 };
 
 window.tambahBarang = async () => {
@@ -786,29 +792,21 @@ window.tambahBarang = async () => {
   if (!nama) { alert('Nama barang wajib diisi!'); return; }
   const kategori = document.getElementById('new-kat').value;
   const expdDate = document.getElementById('new-expd')?.value || '';
-  if (kategori === 'Chemical' && !expdDate) { alert('EXPIRY DATE wajib diisi untuk barang Chemical!'); return; }
+  if (kategori==='Chemical' && !expdDate) { alert('EXPIRY DATE wajib diisi untuk barang Chemical!'); return; }
   const btn = document.getElementById('add-barang-btn');
-  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  btn.disabled=true; btn.textContent='Menyimpan...';
   try {
-    const dataBarang = {
-      nama,
-      kategori,
-      stok: parseFloat(document.getElementById('new-stok').value) || 0,
-      min: parseFloat(document.getElementById('new-min-val').value) || 5,
-      satuan: document.getElementById('new-sat').value,
-    };
-    if (kategori === 'Chemical' && expdDate) dataBarang.expdDate = expdDate;
-    await addDoc(collection(db, 'barang'), dataBarang);
-    document.getElementById('new-nama').value = '';
-    document.getElementById('new-stok').value = '';
-    document.getElementById('new-min-val').value = '';
-    if (document.getElementById('new-expd')) document.getElementById('new-expd').value = '';
-    // Reset EXPD field visibility
-    const row = document.getElementById('new-expd-row');
-    if (row) row.style.display = 'none';
+    const data = { nama, kategori, stok:parseFloat(document.getElementById('new-stok').value)||0, min:parseFloat(document.getElementById('new-min-val').value)||5, satuan:document.getElementById('new-sat').value };
+    if (kategori==='Chemical' && expdDate) data.expdDate = expdDate;
+    await db.collection('barang').add(data);
+    document.getElementById('new-nama').value='';
+    document.getElementById('new-stok').value='';
+    document.getElementById('new-min-val').value='';
+    if (document.getElementById('new-expd')) document.getElementById('new-expd').value='';
+    const row=document.getElementById('new-expd-row'); if(row) row.style.display='none';
     toast('add-success');
-  } catch (e) { alert('Gagal: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Tambah Barang'; }
+  } catch(e) { alert('Gagal: '+e.message); }
+  finally { btn.disabled=false; btn.textContent='Tambah Barang'; }
 };
 
 // ── Transaksi ────────────────────────────────────────
@@ -819,332 +817,174 @@ function renderTrxDropdown() {
   updateKonversi();
 }
 
-// ── Auto Konversi Satuan ─────────────────────────────
 const KONVERSI = {
-  'kg':   { to: 'gr',    factor: 1000,   label: '1 kg = 1000 gr' },
-  'gr':   { to: 'kg',    factor: 0.001,  label: '1000 gr = 1 kg' },
-  'M':    { to: 'CM',    factor: 100,    label: '1 M = 100 CM' },
-  'CM':   { to: 'M',     factor: 0.01,   label: '100 CM = 1 M' },
-  'YD':   { to: 'M',     factor: 0.9144, label: '1 YD = 0.9144 M' },
-  'M':    { to: 'YD',    factor: 1.0936, label: '1 M = 1.0936 YD' },
-  'liter':{ to: 'ml',    factor: 1000,   label: '1 liter = 1000 ml' },
-  'ml':   { to: 'liter', factor: 0.001,  label: '1000 ml = 1 liter' },
+  'kg':{ to:'gr', factor:1000, label:'1 kg = 1000 gr' }, 'gr':{ to:'kg', factor:0.001, label:'1000 gr = 1 kg' },
+  'M': { to:'CM', factor:100,  label:'1 M = 100 CM' },   'CM':{ to:'M',  factor:0.01, label:'100 CM = 1 M' },
+  'YD':{ to:'M',  factor:0.9144, label:'1 YD = 0.9144 M' },
+  'liter':{ to:'ml', factor:1000, label:'1 liter = 1000 ml' }, 'ml':{ to:'liter', factor:0.001, label:'1000 ml = 1 liter' },
 };
 
 window.updateKonversi = () => {
   const box = document.getElementById('konversi-box');
   if (!box) return;
   const barangId = document.getElementById('trx-barang')?.value;
-  const jumlah = parseFloat(document.getElementById('trx-jumlah')?.value);
+  const jumlah   = parseFloat(document.getElementById('trx-jumlah')?.value);
   const b = barangList.find(x => x.id === barangId);
-  if (!b || !jumlah || isNaN(jumlah)) { box.style.display = 'none'; return; }
+  if (!b || !jumlah || isNaN(jumlah)) { box.style.display='none'; return; }
   const k = KONVERSI[b.satuan];
-  if (!k) { box.style.display = 'none'; return; }
-  const hasil = (jumlah * k.factor).toFixed(4).replace(/\.?0+$/, '');
-  box.style.display = 'block';
-  box.innerHTML = `<span style="font-weight:500;color:var(--text-primary);">Auto Konversi</span> &nbsp;${jumlah} ${b.satuan} = <span style="font-weight:500;color:var(--text-primary);">${hasil} ${k.to}</span> &nbsp;<span style="opacity:.6;">(${k.label})</span>`;
+  if (!k) { box.style.display='none'; return; }
+  const hasil = (jumlah*k.factor).toFixed(4).replace(/\.?0+$/,'');
+  box.style.display='block';
+  box.innerHTML=`<span style="font-weight:500;color:var(--text-primary);">Auto Konversi</span> &nbsp;${jumlah} ${b.satuan} = <span style="font-weight:500;color:var(--text-primary);">${hasil} ${k.to}</span> &nbsp;<span style="opacity:.6;">(${k.label})</span>`;
 };
 
 window.catatTransaksi = async () => {
   const barangId   = document.getElementById('trx-barang').value;
   const jenis      = isAdmin() ? document.getElementById('trx-jenis').value : 'keluar';
-  const jumlahRaw  = document.getElementById('trx-jumlah').value;
-  const jumlah     = parseFloat(jumlahRaw);
+  const jumlah     = parseFloat(document.getElementById('trx-jumlah').value);
   const ket        = document.getElementById('trx-ket').value.trim();
   const jcmdr      = document.getElementById('trx-jcmdr').value.trim();
   const registrasi = document.getElementById('trx-registrasi').value.trim();
 
-  // ── Validasi field wajib dengan highlight ────────
   let hasError = false;
   const setErr = (inputId, errId, valid) => {
-    const input = document.getElementById(inputId);
-    const msg   = document.getElementById(errId);
-    if (!valid) {
-      input.classList.add('field-error');
-      if (msg) msg.style.display = 'block';
-      hasError = true;
-    } else {
-      input.classList.remove('field-error');
-      if (msg) msg.style.display = 'none';
-    }
+    const input=document.getElementById(inputId), msg=document.getElementById(errId);
+    if (!valid) { input.classList.add('field-error'); if(msg) msg.style.display='block'; hasError=true; }
+    else        { input.classList.remove('field-error'); if(msg) msg.style.display='none'; }
   };
-  setErr('trx-jcmdr',      'err-jcmdr',      jcmdr !== '');
-  setErr('trx-registrasi', 'err-registrasi',  registrasi !== '');
-  setErr('trx-jumlah',     'err-jumlah',      !isNaN(jumlah) && jumlah > 0);
+  setErr('trx-jcmdr',      'err-jcmdr',     jcmdr !== '');
+  setErr('trx-registrasi', 'err-registrasi', registrasi !== '');
+  setErr('trx-jumlah',     'err-jumlah',     !isNaN(jumlah) && jumlah > 0);
   if (hasError) return;
 
   const b = barangList.find(x => x.id === barangId);
   if (!b) return;
-  if (jenis === 'keluar' && jumlah > b.stok) {
-    const input = document.getElementById('trx-jumlah');
-    input.classList.add('field-error');
-    const msg = document.getElementById('err-jumlah');
-    if (msg) { msg.textContent = `Stok tidak cukup! Tersedia: ${b.stok} ${b.satuan}`; msg.style.display = 'block'; }
+  if (jenis==='keluar' && jumlah>b.stok) {
+    document.getElementById('trx-jumlah').classList.add('field-error');
+    const msg=document.getElementById('err-jumlah');
+    if(msg){ msg.textContent=`Stok tidak cukup! Tersedia: ${b.stok} ${b.satuan}`; msg.style.display='block'; }
     return;
   }
-
-  const btn = document.getElementById('trx-btn');
-  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  const btn=document.getElementById('trx-btn');
+  btn.disabled=true; btn.textContent='Menyimpan...';
   try {
-    const newStok = parseFloat((jenis === 'masuk' ? b.stok + jumlah : b.stok - jumlah).toFixed(6));
-    await updateDoc(doc(db, 'barang', barangId), { stok: newStok });
-    await addDoc(collection(db, 'history'), { barang: b.nama, barangId, jenis, jumlah, ket, jcmdr, registrasi, oleh: currentUserData.nama || currentUser.email, userId: currentUser.uid, timestamp: Date.now() });
-    // Clear fields & errors
-    ['trx-jumlah','trx-ket','trx-jcmdr','trx-registrasi'].forEach(id => document.getElementById(id).value = '');
-    ['trx-jcmdr','trx-registrasi','trx-jumlah'].forEach(id => document.getElementById(id).classList.remove('field-error'));
-    ['err-jcmdr','err-registrasi','err-jumlah'].forEach(id => { const e = document.getElementById(id); if(e){ e.style.display='none'; e.textContent=e.dataset.default||e.textContent; } });
-    document.getElementById('konversi-box').style.display = 'none';
+    const newStok = parseFloat((jenis==='masuk' ? b.stok+jumlah : b.stok-jumlah).toFixed(6));
+    await db.collection('barang').doc(barangId).update({ stok:newStok });
+    await db.collection('history').add({ barang:b.nama, barangId, jenis, jumlah, ket, jcmdr, registrasi, oleh:currentUserData.nama||currentUser.email, userId:currentUser.uid, timestamp:Date.now() });
+    ['trx-jumlah','trx-ket','trx-jcmdr','trx-registrasi'].forEach(id=>document.getElementById(id).value='');
+    ['trx-jcmdr','trx-registrasi','trx-jumlah'].forEach(id=>document.getElementById(id).classList.remove('field-error'));
+    ['err-jcmdr','err-registrasi','err-jumlah'].forEach(id=>{ const e=document.getElementById(id); if(e) e.style.display='none'; });
+    document.getElementById('konversi-box').style.display='none';
     toast('trx-success');
-  } catch (e) { alert('Gagal: ' + e.message); }
-  finally { btn.disabled = false; btn.textContent = 'Simpan Transaksi'; }
+  } catch(e) { alert('Gagal: '+e.message); }
+  finally { btn.disabled=false; btn.textContent='Simpan Transaksi'; }
 };
 
 function renderHistory() {
-  const el = document.getElementById('history-list');
-  if (!el) return;
-  const list = isAdmin() ? historyList : historyList.filter(h => h.userId === currentUser.uid);
-  if (!list.length) { el.innerHTML = '<div class="empty">Belum ada transaksi.</div>'; return; }
-  el.innerHTML = list.slice(0, 30).map(h => {
-    const tgl = h.timestamp ? new Date(h.timestamp).toLocaleDateString('id-ID') : '-';
-    const meta = [tgl, h.oleh, h.jcmdr ? 'JC/MDR: '+h.jcmdr : '', h.registrasi ? 'Reg: '+h.registrasi : '', h.ket].filter(Boolean).join(' · ');
-    return `<div class="history-item"><div><div style="font-size:14px;">${h.barang}</div><div class="history-meta">${meta}</div></div><div class="${h.jenis === 'masuk' ? 'qty-in' : 'qty-out'}">${h.jenis === 'masuk' ? '+' : '-'}${h.jumlah}</div></div>`;
+  const el=document.getElementById('history-list');
+  if(!el) return;
+  const list=isAdmin()?historyList:historyList.filter(h=>h.userId===currentUser.uid);
+  if(!list.length){ el.innerHTML='<div class="empty">Belum ada transaksi.</div>'; return; }
+  el.innerHTML=list.slice(0,30).map(h=>{
+    const tgl=h.timestamp?new Date(h.timestamp).toLocaleDateString('id-ID'):'-';
+    const meta=[tgl,h.oleh,h.jcmdr?'JC/MDR:'+h.jcmdr:'',h.registrasi?'Reg:'+h.registrasi:'',h.ket].filter(Boolean).join(' · ');
+    return `<div class="history-item"><div><div style="font-size:14px;">${h.barang}</div><div class="history-meta">${meta}</div></div><div class="${h.jenis==='masuk'?'qty-in':'qty-out'}">${h.jenis==='masuk'?'+':'-'}${h.jumlah}</div></div>`;
   }).join('');
 }
 
-// ── Notif ────────────────────────────────────────────
+// ── Notifikasi ────────────────────────────────────────
 function renderNotif() {
-  const el = document.getElementById('notif-list');
-  if (!el) return;
-
-  const kritis  = barangList.filter(b => b.stok < b.min);
-  const expdList = barangList.filter(b => {
-    if (b.kategori !== 'Chemical' || !b.expdDate) return false;
-    const sisa = sisaHari(b.expdDate);
-    return sisa !== null && sisa <= 30;
-  });
-
-  if (!kritis.length && !expdList.length) {
-    el.innerHTML = '<div class="empty" style="color:#3B6D11;">Semua stok aman dan tidak ada barang yang akan kadaluarsa!</div>';
-    return;
+  const el=document.getElementById('notif-list');
+  if(!el) return;
+  const kritis=barangList.filter(b=>b.stok<b.min);
+  const expdList=barangList.filter(b=>{ if(b.kategori!=='Chemical'||!b.expdDate) return false; const s=sisaHari(b.expdDate); return s!==null&&s<=30; });
+  if(!kritis.length&&!expdList.length){ el.innerHTML='<div class="empty" style="color:#3B6D11;">Semua stok aman dan tidak ada barang yang akan kadaluarsa!</div>'; return; }
+  let h='';
+  if(kritis.length){
+    h+=`<div style="font-size:12px;font-weight:500;color:var(--text-secondary);padding:6px 0 8px;">PERINGATAN STOK</div>`;
+    h+=kritis.map(b=>{ const habis=b.stok===0; return `<div class="alert-item"><div class="alert-icon ${habis?'ai-danger':'ai-warn'}">!</div><div style="flex:1;"><div style="font-weight:500;">${b.nama}</div><div style="font-size:12px;color:var(--text-secondary);">Stok: ${b.stok} · Min: ${b.min} ${b.satuan}</div></div><span class="badge ${habis?'badge-danger':'badge-warn'}">${habis?'Habis':'Menipis'}</span></div>`; }).join('');
   }
-
-  let html = '';
-
-  // Notifikasi stok
-  if (kritis.length) {
-    html += `<div style="font-size:12px;font-weight:500;color:var(--text-secondary);padding:6px 0 8px;letter-spacing:.04em;">PERINGATAN STOK</div>`;
-    html += kritis.map(b => {
-      const habis = b.stok === 0;
-      return `<div class="alert-item">
-        <div class="alert-icon ${habis ? 'ai-danger' : 'ai-warn'}">!</div>
-        <div style="flex:1;">
-          <div style="font-weight:500;">${b.nama}</div>
-          <div style="font-size:12px;color:var(--text-secondary);">Stok: ${b.stok} · Min: ${b.min} ${b.satuan}</div>
-        </div>
-        <span class="badge ${habis ? 'badge-danger' : 'badge-warn'}">${habis ? 'Habis' : 'Menipis'}</span>
-      </div>`;
-    }).join('');
+  if(expdList.length){
+    if(kritis.length) h+=`<div style="height:0.5px;background:var(--border-light);margin:10px 0;"></div>`;
+    h+=`<div style="font-size:12px;font-weight:500;color:var(--text-secondary);padding:6px 0 8px;">PERINGATAN KADALUARSA — CHEMICAL</div>`;
+    h+=expdList.map(b=>{ const sisa=sisaHari(b.expdDate),sudah=sisa<0,label=sudah?'EXPIRED':'Akan EXPD',cls=sudah?'ai-danger':'ai-expd',bcls=sudah?'badge-danger':'badge-expd',txt=sudah?`Sudah kadaluarsa ${Math.abs(sisa)} hari lalu`:sisa===0?'Kadaluarsa HARI INI':`Sisa ${sisa} hari · EXPD: ${fmtDate(b.expdDate)}`; return `<div class="alert-item"><div class="alert-icon ${cls}" style="font-size:11px;">EXP</div><div style="flex:1;"><div style="font-weight:500;">${b.nama}</div><div style="font-size:12px;color:var(--text-secondary);">${txt}</div></div><span class="badge ${bcls}">${label}</span></div>`; }).join('');
   }
-
-  // Notifikasi EXPD Chemical
-  if (expdList.length) {
-    if (kritis.length) html += `<div style="height:0.5px;background:var(--border-light);margin:10px 0;"></div>`;
-    html += `<div style="font-size:12px;font-weight:500;color:var(--text-secondary);padding:6px 0 8px;letter-spacing:.04em;">PERINGATAN KADALUARSA — CHEMICAL</div>`;
-    html += expdList.map(b => {
-      const sisa = sisaHari(b.expdDate);
-      const sudahExpd = sisa < 0;
-      const label = sudahExpd ? 'EXPIRED' : 'Akan EXPD';
-      const cls   = sudahExpd ? 'ai-danger' : 'ai-expd';
-      const bcls  = sudahExpd ? 'badge-danger' : 'badge-expd';
-      const sisaText = sudahExpd
-        ? `Sudah kadaluarsa ${Math.abs(sisa)} hari lalu`
-        : sisa === 0 ? 'Kadaluarsa HARI INI'
-        : `Sisa ${sisa} hari · EXPD: ${fmtDate(b.expdDate)}`;
-      return `<div class="alert-item">
-        <div class="alert-icon ${cls}" style="font-size:12px;">EXP</div>
-        <div style="flex:1;">
-          <div style="font-weight:500;">${b.nama}</div>
-          <div style="font-size:12px;color:var(--text-secondary);">${sisaText}</div>
-        </div>
-        <span class="badge ${bcls}">${label}</span>
-      </div>`;
-    }).join('');
-  }
-
-  el.innerHTML = html;
+  el.innerHTML=h;
 }
 
 // ── Laporan ───────────────────────────────────────────
 function renderLaporan() {
-  const el = document.getElementById('lap-metrics');
-  if (!el) return;
-  const tin = historyList.filter(h => h.jenis === 'masuk').reduce((a, h) => a + h.jumlah, 0);
-  const tout = historyList.filter(h => h.jenis === 'keluar').reduce((a, h) => a + h.jumlah, 0);
-  el.innerHTML = `<div class="metric"><div class="metric-label">Total Transaksi</div><div class="metric-value">${historyList.length}</div></div><div class="metric"><div class="metric-label">Total Masuk</div><div class="metric-value">${tin}</div></div><div class="metric"><div class="metric-label">Total Keluar</div><div class="metric-value">${tout}</div></div>`;
-  const cats = {};
-  barangList.forEach(b => { if (!cats[b.kategori]) cats[b.kategori] = { c: 0, s: 0, k: 0 }; cats[b.kategori].c++; cats[b.kategori].s += b.stok; if (b.stok < b.min) cats[b.kategori].k++; });
-  document.getElementById('lap-kat').innerHTML = Object.entries(cats).map(([k, v]) => `<tr><td>${k}</td><td>${v.c}</td><td>${v.s}</td><td>${v.k > 0 ? `<span class="badge badge-warn">${v.k}</span>` : '<span class="badge badge-ok">0</span>'}</td></tr>`).join('');
-  document.getElementById('lap-top').innerHTML = [...barangList].sort((a, b) => b.stok - a.stok).slice(0, 5).map(b => `<tr><td>${b.nama}</td><td>${b.stok}</td><td>${b.satuan}</td></tr>`).join('');
+  const el=document.getElementById('lap-metrics');
+  if(!el) return;
+  const tin=historyList.filter(h=>h.jenis==='masuk').reduce((a,h)=>a+h.jumlah,0);
+  const tout=historyList.filter(h=>h.jenis==='keluar').reduce((a,h)=>a+h.jumlah,0);
+  el.innerHTML=`<div class="metric"><div class="metric-label">Total Transaksi</div><div class="metric-value">${historyList.length}</div></div><div class="metric"><div class="metric-label">Total Masuk</div><div class="metric-value">${tin}</div></div><div class="metric"><div class="metric-label">Total Keluar</div><div class="metric-value">${tout}</div></div>`;
+  const cats={};
+  barangList.forEach(b=>{ if(!cats[b.kategori]) cats[b.kategori]={c:0,s:0,k:0}; cats[b.kategori].c++; cats[b.kategori].s+=b.stok; if(b.stok<b.min) cats[b.kategori].k++; });
+  document.getElementById('lap-kat').innerHTML=Object.entries(cats).map(([k,v])=>`<tr><td>${k}</td><td>${v.c}</td><td>${v.s}</td><td>${v.k>0?`<span class="badge badge-warn">${v.k}</span>`:'<span class="badge badge-ok">0</span>'}</td></tr>`).join('');
+  document.getElementById('lap-top').innerHTML=[...barangList].sort((a,b)=>b.stok-a.stok).slice(0,5).map(b=>`<tr><td>${b.nama}</td><td>${b.stok}</td><td>${b.satuan}</td></tr>`).join('');
 }
 
 // ── Manajemen User ────────────────────────────────────
 function renderManajemen() {
-  const el = document.getElementById('user-list');
-  if (!el) return;
-  if (!usersList.length) { el.innerHTML = '<div class="empty">Belum ada pengguna.</div>'; return; }
-  el.innerHTML = usersList.map(u => {
-    const nm = u.nama || u.email || 'User';
-    const initials = nm.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
-    const isMe = u.id === currentUser.uid;
-    return `<div class="user-row"><div style="display:flex;align-items:center;gap:10px;"><div class="avatar ${u.role === 'admin' ? 'av-admin' : 'av-user'}" style="width:30px;height:30px;font-size:11px;">${initials}</div><div><div style="font-weight:500;">${nm}</div><div style="font-size:12px;color:var(--text-secondary);">${u.email}</div></div></div><div style="display:flex;align-items:center;gap:8px;"><span class="role-badge ${u.role === 'admin' ? 'badge-admin' : 'badge-user'}">${u.role === 'admin' ? 'Admin' : 'User'}</span>${isMe ? '<span style="font-size:11px;color:var(--text-secondary);">Anda</span>' : `<button class="btn-danger" onclick="hapusUser('${u.id}','${nm.replace(/'/g,"\\'")}')">Hapus</button>`}</div></div>`;
+  const el=document.getElementById('user-list');
+  if(!el) return;
+  if(!usersList.length){ el.innerHTML='<div class="empty">Belum ada pengguna.</div>'; return; }
+  el.innerHTML=usersList.map(u=>{ const nm=u.nama||u.email||'User',initials=nm.split(' ').map(w=>w[0]).join('').substring(0,2).toUpperCase(),isMe=u.id===currentUser.uid;
+    return `<div class="user-row"><div style="display:flex;align-items:center;gap:10px;"><div class="avatar ${u.role==='admin'?'av-admin':'av-user'}" style="width:30px;height:30px;font-size:11px;">${initials}</div><div><div style="font-weight:500;">${nm}</div><div style="font-size:12px;color:var(--text-secondary);">${u.email}</div></div></div><div style="display:flex;align-items:center;gap:8px;"><span class="role-badge ${u.role==='admin'?'badge-admin':'badge-user'}">${u.role==='admin'?'Admin':'User'}</span>${isMe?'<span style="font-size:11px;color:var(--text-secondary);">Anda</span>':`<button class="btn-danger" onclick="hapusUser('${u.id}','${nm.replace(/'/g,"\'")}')">Hapus</button>`}</div></div>`;
   }).join('');
 }
 
 window.tambahUser = async () => {
-  const email = document.getElementById('new-uemail').value.trim();
-  const pass  = document.getElementById('new-upass').value;
-  const nama  = document.getElementById('new-unamelengkap').value.trim();
-  const role  = document.getElementById('new-urole').value;
-  const errEl = document.getElementById('user-err');
-  errEl.style.display = 'none';
-  if (!email || !pass || !nama) { errEl.textContent = 'Semua field wajib diisi!'; errEl.style.display = 'block'; return; }
-  if (pass.length < 6) { errEl.textContent = 'Password minimal 6 karakter.'; errEl.style.display = 'block'; return; }
-  const btn = document.getElementById('add-user-btn');
-  btn.disabled = true; btn.textContent = 'Menyimpan...';
+  const email=document.getElementById('new-uemail').value.trim(), pass=document.getElementById('new-upass').value,
+        nama=document.getElementById('new-unamelengkap').value.trim(), role=document.getElementById('new-urole').value;
+  const errEl=document.getElementById('user-err'); errEl.style.display='none';
+  if(!email||!pass||!nama){ errEl.textContent='Semua field wajib diisi!'; errEl.style.display='block'; return; }
+  if(pass.length<6){ errEl.textContent='Password minimal 6 karakter.'; errEl.style.display='block'; return; }
+  const btn=document.getElementById('add-user-btn');
+  btn.disabled=true; btn.textContent='Menyimpan...';
   try {
-    // Langkah 1: Dapatkan ID token Admin yang sedang login
-    const idToken = await currentUser.getIdToken();
-
-    // Langkah 2: Buat akun baru via REST API
-    const apiKey = (_activeCfg && _activeCfg.apiKey) || (app && app.options && app.options.apiKey) || (loadCfg() || {}).apiKey;
-    if (!apiKey) throw new Error('Konfigurasi Firebase tidak ditemukan.');
-
-    const signUpRes = await fetch(
-      'https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=' + apiKey,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password: pass, returnSecureToken: true }),
-      }
-    );
-    const signUpData = await signUpRes.json();
-    if (!signUpRes.ok) {
-      const errMsgs = {
-        'EMAIL_EXISTS':          'Email sudah terdaftar.',
-        'INVALID_EMAIL':         'Format email tidak valid.',
-        'WEAK_PASSWORD':         'Password minimal 6 karakter.',
-        'OPERATION_NOT_ALLOWED': 'Email/Password sign-in belum diaktifkan di Firebase.',
-      };
-      const code = (signUpData.error && signUpData.error.message) || 'UNKNOWN';
-      throw new Error(errMsgs[code] || 'Gagal membuat akun: ' + code);
-    }
-    const newUid = signUpData.localId;
-
-    // Langkah 3: Tulis profil ke Firestore — Admin yang sedang login punya izin write
-    // (sesuai Firestore Rules: isAdmin() boleh create dokumen users siapa saja)
-    await setDoc(doc(db, 'users', newUid), { email, nama, role });
-
-    // Berhasil — reset form
-    document.getElementById('new-uemail').value = '';
-    document.getElementById('new-upass').value = '';
-    document.getElementById('new-unamelengkap').value = '';
+    const apiKey=(_activeCfg&&_activeCfg.apiKey)||(myFirebaseConfig&&myFirebaseConfig.apiKey);
+    if(!apiKey) throw new Error('Konfigurasi Firebase tidak ditemukan.');
+    const res=await fetch('https://identitytoolkit.googleapis.com/v1/accounts:signUp?key='+apiKey,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,password:pass,returnSecureToken:true})});
+    const data=await res.json();
+    if(!res.ok){ const m={'EMAIL_EXISTS':'Email sudah terdaftar.','INVALID_EMAIL':'Format email tidak valid.','WEAK_PASSWORD':'Password minimal 6 karakter.'}; throw new Error(m[data.error?.message]||'Gagal: '+(data.error?.message||'Unknown')); }
+    await db.collection('users').doc(data.localId).set({email,nama,role});
+    ['new-uemail','new-upass','new-unamelengkap'].forEach(id=>document.getElementById(id).value='');
     toast('user-success');
-
-  } catch (e) {
-    const msgs = {
-      'auth/email-already-in-use': 'Email sudah terdaftar.',
-      'auth/invalid-email':        'Format email tidak valid.',
-      'auth/weak-password':        'Password minimal 6 karakter.',
-    };
-    errEl.textContent = msgs[e.code] || ('Gagal: ' + (e.message || e.code));
-    errEl.style.display = 'block';
-  } finally {
-    btn.disabled = false; btn.textContent = 'Tambah Pengguna';
-  }
+  } catch(e){ errEl.textContent=e.message; errEl.style.display='block'; }
+  finally{ btn.disabled=false; btn.textContent='Tambah Pengguna'; }
 };
 
 window.hapusUser = async (uid, nama) => {
-  if (uid === currentUser.uid) return;
-  if (!confirm(`Hapus akun "${nama}"?`)) return;
-  await deleteDoc(doc(db, 'users', uid));
+  if(uid===currentUser.uid) return;
+  if(!confirm(`Hapus akun "${nama}"?`)) return;
+  try {
+    const apiKey=(_activeCfg&&_activeCfg.apiKey)||(myFirebaseConfig&&myFirebaseConfig.apiKey);
+    const idToken=await currentUser.getIdToken(true);
+    const projectId=myFirebaseConfig.projectId;
+    const fnRes=await fetch(`https://us-central1-${projectId}.cloudfunctions.net/deleteUser`,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+idToken},body:JSON.stringify({uid})});
+    if(!fnRes.ok) console.warn('Cloud Function belum di-deploy, hanya hapus Firestore.');
+  } catch(e){ console.warn('Cloud Function error:', e.message); }
+  await db.collection('users').doc(uid).delete();
 };
 
-// ── Export Excel (.xlsx) ──────────────────────────────
+// ── Export Excel ──────────────────────────────────────
 window.exportExcel = () => {
-  if (typeof XLSX === 'undefined') { alert('Library Excel belum siap, coba lagi sebentar.'); return; }
-
-  const tglExport = new Date().toLocaleDateString('id-ID');
-  const wb = XLSX.utils.book_new();
-
-  // ── Sheet 1: Stok Barang ──────────────────────────────
-  const stokData = [
-    ['LAPORAN STOK BARANG'],
-    ['Tanggal Export:', tglExport],
-    [],
-    ['No', 'Nama Barang', 'Kategori', 'Stok', 'Minimum Stok', 'Satuan', 'Status'],
-  ];
-  barangList.forEach((b, i) => {
-    const s = b.stok === 0 ? 'Habis' : b.stok < b.min ? 'Menipis' : 'Aman';
-    stokData.push([i + 1, b.nama, b.kategori, b.stok, b.min, b.satuan, s]);
-  });
-  // Summary row
-  stokData.push([]);
-  stokData.push(['', 'Total Jenis Barang:', barangList.length, '', 'Stok Aman:', barangList.filter(b => b.stok >= b.min).length, '']);
-  stokData.push(['', 'Stok Menipis:', barangList.filter(b => b.stok > 0 && b.stok < b.min).length, '', 'Stok Habis:', barangList.filter(b => b.stok === 0).length, '']);
-
-  const wsStok = XLSX.utils.aoa_to_sheet(stokData);
-
-  // Column widths for stok sheet
-  wsStok['!cols'] = [
-    { wch: 5 },   // No
-    { wch: 28 },  // Nama Barang
-    { wch: 16 },  // Kategori
-    { wch: 10 },  // Stok
-    { wch: 14 },  // Min Stok
-    { wch: 10 },  // Satuan
-    { wch: 12 },  // Status
-  ];
-  XLSX.utils.book_append_sheet(wb, wsStok, 'Stok Barang');
-
-  // ── Sheet 2: Riwayat Transaksi ────────────────────────
-  const histData = [
-    ['RIWAYAT TRANSAKSI'],
-    ['Tanggal Export:', tglExport],
-    [],
-    ['No', 'Tanggal', 'Nama Barang', 'Jenis', 'Jumlah', 'NO. JC/MDR', 'Registrasi', 'Keterangan', 'Oleh'],
-  ];
-  historyList.forEach((h, i) => {
-    const tgl = h.timestamp ? new Date(h.timestamp).toLocaleDateString('id-ID') : '-';
-    histData.push([
-      i + 1,
-      tgl,
-      h.barang,
-      h.jenis === 'masuk' ? 'Masuk' : 'Keluar',
-      h.jumlah,
-      h.jcmdr || '-',
-      h.registrasi || '-',
-      h.ket || '-',
-      h.oleh || '-',
-    ]);
-  });
-
-  const wsHist = XLSX.utils.aoa_to_sheet(histData);
-  wsHist['!cols'] = [
-    { wch: 5 },   // No
-    { wch: 14 },  // Tanggal
-    { wch: 28 },  // Nama Barang
-    { wch: 10 },  // Jenis
-    { wch: 10 },  // Jumlah
-    { wch: 18 },  // JC/MDR
-    { wch: 18 },  // Registrasi
-    { wch: 24 },  // Keterangan
-    { wch: 18 },  // Oleh
-  ];
-  XLSX.utils.book_append_sheet(wb, wsHist, 'Riwayat Transaksi');
-
-  // Download
-  const fileName = 'stok_gudang_' + new Date().toISOString().split('T')[0] + '.xlsx';
-  XLSX.writeFile(wb, fileName);
+  if(typeof XLSX==='undefined'){ alert('Library Excel belum siap.'); return; }
+  const tgl=new Date().toLocaleDateString('id-ID'), wb=XLSX.utils.book_new();
+  const stokData=[['LAPORAN STOK BARANG'],['Tanggal Export:',tgl],[],['No','Nama Barang','Kategori','Stok','Minimum Stok','Satuan','Status','EXPD Date']];
+  barangList.forEach((b,i)=>{ const s=b.stok===0?'Habis':b.stok<b.min?'Menipis':'Aman'; stokData.push([i+1,b.nama,b.kategori,b.stok,b.min,b.satuan,s,b.expdDate?fmtDate(b.expdDate):'-']); });
+  stokData.push([],['','Total:',barangList.length,'','Aman:',barangList.filter(b=>b.stok>=b.min).length,'','']);
+  const wsStok=XLSX.utils.aoa_to_sheet(stokData);
+  wsStok['!cols']=[{wch:5},{wch:28},{wch:16},{wch:10},{wch:14},{wch:10},{wch:12},{wch:14}];
+  XLSX.utils.book_append_sheet(wb,wsStok,'Stok Barang');
+  const histData=[['RIWAYAT TRANSAKSI'],['Tanggal Export:',tgl],[],['No','Tanggal','Nama Barang','Jenis','Jumlah','NO. JC/MDR','Registrasi','Keterangan','Oleh']];
+  historyList.forEach((h,i)=>{ const tglH=h.timestamp?new Date(h.timestamp).toLocaleDateString('id-ID'):'-'; histData.push([i+1,tglH,h.barang,h.jenis==='masuk'?'Masuk':'Keluar',h.jumlah,h.jcmdr||'-',h.registrasi||'-',h.ket||'-',h.oleh||'-']); });
+  const wsHist=XLSX.utils.aoa_to_sheet(histData);
+  wsHist['!cols']=[{wch:5},{wch:14},{wch:28},{wch:10},{wch:10},{wch:18},{wch:18},{wch:24},{wch:18}];
+  XLSX.utils.book_append_sheet(wb,wsHist,'Riwayat Transaksi');
+  XLSX.writeFile(wb,'stok_gudang_'+new Date().toISOString().split('T')[0]+'.xlsx');
 };
 
 // ── Render All ────────────────────────────────────────
@@ -1152,20 +992,18 @@ function renderAll() {
   renderMetrics();
   renderStokTable();
   renderNotif();
-  if (isAdmin()) { renderLaporan(); }
+  if(isAdmin()){ renderLaporan(); }
 }
 
 // ── Startup ───────────────────────────────────────────
 const myFirebaseConfig = {
-  apiKey: "AIzaSyCdN5upUOqkAfJX7X9TfAzkynCF097IyNI",
-  authDomain: "wscb-storage.firebaseapp.com",
-  projectId: "wscb-storage",
-  storageBucket: "wscb-storage.firebasestorage.app",
+  apiKey:            "AIzaSyCdN5upUOqkAfJX7X9TfAzkynCF097IyNI",
+  authDomain:        "wscb-storage.firebaseapp.com",
+  projectId:         "wscb-storage",
+  storageBucket:     "wscb-storage.firebasestorage.app",
   messagingSenderId: "84767336152",
-  appId: "1:84767336152:web:815317c699a732b69499ad"
+  appId:             "1:84767336152:web:815317c699a732b69499ad"
 };
-
-// Simpan ke memori dan localStorage agar doRegister & tambahUser bisa akses
 _activeCfg = myFirebaseConfig;
 saveCfg(myFirebaseConfig);
 initFB(myFirebaseConfig);
